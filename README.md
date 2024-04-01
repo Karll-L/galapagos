@@ -4,11 +4,7 @@ Welcome to the Galapagos Hardware Stack.
 
 ## Prerequisites
 
-Both the Docker Container and native install requires Xilinx Vivado to be installed. Current versions supported are 2018.1, 2018.2, 2018.3, 2019.1 and 2023.1
-
-## Docker Jupyter Tutorial
-
-To run tutorial refer to instructions in [this README](https://github.com/UofT-HPRC/galapagos/blob/master/docker/README.md)
+The native install requires Xilinx Vivado to be installed. Current versions supported are 2018.1, 2018.2, 2018.3, 2019.1 and 2023.1
 
 ## Multiplier Demo Description:
 This demo includes 4 kernels:  
@@ -61,7 +57,7 @@ So if you have any changes after you have built a project, or want to make more 
 
 The layers of the stack that we introduce are as follows:  
 - Middleware Layer
-- Hypervisor Layer
+- Hypervisor (Shell) Layer
 - Physical Hardware /Network Setup
 
 For more details on our automation process please refer to the Makefile. 
@@ -69,17 +65,12 @@ For more details on our automation process please refer to the Makefile.
 ### Physical Hardware/Network Setup Layer
 
 Our setup has all FPGAs connected directly to a network switch.  We have the following FPGA boards:
-- Alphadata 7v3
-- Alphadata 8k5
-- Alphadata 8v3
 - Fidus Sidewinder (also has a hardened ARM CPU)
-
-Boards without the hardened ARM are connected with an X86 CPU via PCIe. 
 
 ### Hypervisor Layer
 
-We plan to have hypervisors setup for various boards. Currently the hypervisor abstracts away the network and PCIe interfaces. 
-This exposes all devices with a hypervisor as an AXI-stream in and out through the network interface, and an S_AXI interface from PCIe or ARM and M_AXI to off-chip memory
+We plan to have hypervisors (shells) setup for various boards. Currently the hypervisor abstracts away the network and PCIe interfaces. 
+This exposes all devices with a hypervisor as an AXI-stream in and out through the network interface, and an S_AXI interface from PCIe or ARM and M_AXI to off-chip memory.
 
 
 ### Middleware Layer
@@ -91,40 +82,54 @@ This takes two files (refer to LOGICALFILE, MAPFILE defined in the Makefile) and
 The cluster is described in a LOGICALFILE with no notion of the mappings. 
 The following is an example kernel from the logical file:
 ```
- <kernel> kernelName
-	<num> 1 </num>
+<?xml version="1.0" encoding="UTF-8"?>
+<cluster>
+    <packet>
+        <data> 512 </data>
+        <keep> 64 </keep>
+        <last> 1 </last>
+    </packet>
+	<kernel> data_sender <!-- 'data_sender' kernel is a software kernel -->
+        <num> 0 </num>
         <rep> 1 </rep>
-        <clk> nameOfClockPort </clk>
-        <id_port> nameOfIDport </id_port>
-        <aresetn> nameOfResetPort </aresetn>
         <s_axis>
-            <name> nameOfInputStreamInterface </name>
-	    <scope> scope </scope>
+            <scope> global </scope>
+            <name> in </name>
         </s_axis>
         <m_axis>
-            <name> nameOfOutputStreamInterface </name>
-	    <scope> scope </scope>
-            <debug/>
+            <scope> global </scope>
+            <name> out </name>
         </m_axis>
-        <s_axi>
-            <name> nameofControlInterface </name>
-	    <scope> scope </scope>
-        </s_axi>
-        <m_axi>
-            <name> nameOfMemoryInterface </name>
-	    <scope> scope </scope>
-        </m_axi>
-</kernel>
+	</kernel>
+    <kernel> multiplier <!-- 'multiplier' kernel is a hardware kernel -->
+        <vendor> xilinx.com </vendor>
+        <version> 1.0 </version>
+        <lib> hls </lib>
+        <num> 1 </num>
+        <rep> 1 </rep>
+        <clk> ap_clk </clk>
+        <aresetn> ap_rst_n </aresetn>
+        <s_axis>
+            <scope> global </scope>
+            <name> pkt_in </name>
+        </s_axis>
+        <m_axis>
+            <scope> global </scope>
+            <name> pkt_out </name>
+        </m_axis>
+    </kernel>
+</cluster>
 ```
-
+For each `<kernal>`: <br/>
 The `<num>` tag refers to the unique ID of a kernel. <br/>
 The `<rep>` refers to the number of times to repeat a kernel. The IDs are of repeated kernels are increased sequentially. <br/>
-The `<clk>` refers to the name of the clock interface, this will be tied to the clock in the Hypervisor. <br/
-The `<aresetn>` refers to the name of the reset interface, this will be tied to the clock in the Hypervisor (negative edge triggered). <br/>
+The `<clk>` refers to the name of the clock interface, this will be tied to the clock in the Hypervisor (Shell). <br/>
+The `<aresetn>` refers to the name of the reset interface, this will be tied to the clock in the Hypervisor (Shell)(negative edge triggered). <br/>
 The `<id_port>` refers to the port name in the kernel that will be tied to a constant with the value of the unique kernel ID. (optional) <br/>
 The `<s_axi>` refers to a port from that would be of the `s_axi` interface. If the scope is `global` then this will connect to the control interface (can be either PCIe or ARM, depending on the board). For a local scope, you can specify the `master` which would be another `m_axi` interface that is of `local` scope. <br/>
 The `<m_axi>` refers to a port that would be of the `m_axi` interface. If it's of `global` scope then it will tie to the off-chip memory, else it will connect to an `s_axi` interface that is of `local` scope. <br/>
 The `<s_axis>` and `<m_axis>` is similar to that of the above interfaces, except that is is the AXI stream. `global` scope ties to the networking port, `local` can connect to each other. <br/>
+The `<packet>` tag is used to specify the AXI-stream signal bit-widths. <br/>
 
 
 #### MAPFILE
@@ -133,17 +138,26 @@ The cluster is described in a MAPFILE with no notion of the mappings.  <br/>
 The following is an example kernel from the map file:
 
 ```
-<node>
-        <board> adm-8k5-debug </board>
-        <comm> eth </comm>
+<cluster>
+    <node>
+        <type> sw </type>
+        <kernel> 0 </kernel> <!-- data_sender from the logical.xml example above --> 
+        <kernel> 5 </kernel><!-- could also add multiple kernels as shown -->
+        <mac> aa:bb:cc:dd:ee:ff </mac>
+        <ip> 10.0.0.1 </ip>
+    </node>
+    <node>
+        <board> sidewinder </board>
+        <comm> udp </comm>
         <type> hw </type>
-        <kernel> 1 </kernel>
-        <kernel> 2 </kernel>
+        <kernel> 1 </kernel> <!-- multiplier from the logical.xml example above -->
+        <kernel> 2 </kernel> <!-- could also add multiple kernels as shown -->
         <kernel> 3 </kernel>
-        <mac_addr>  fa:16:3e:55:ca:02 </mac_addr>
-        <ip_addr> 10.1.2.102 </ip_addr>
-</node>
-
+        <kernel> 4 </kernel>
+        <mac> 66:55:44:33:22:11 </mac>
+        <ip> 10.0.0.2 </ip>
+    </node>
+</cluster>
 ```
 
 The `<board>` tag refers to the FPGA board you wish to use for this particular node. <br/>
